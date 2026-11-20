@@ -29,6 +29,7 @@ namespace ClipboarderX
         /// </summary>
         private void InitializeComponent()
         {
+            System.ComponentModel.ComponentResourceManager resources = new System.ComponentModel.ComponentResourceManager(typeof(Form1));
             this.labelTarget = new System.Windows.Forms.Label();
             this.labelStatus = new System.Windows.Forms.Label();
             this.labelSendCount = new System.Windows.Forms.Label();
@@ -75,14 +76,16 @@ namespace ClipboarderX
             // 
             this.AutoScaleDimensions = new System.Drawing.SizeF(6F, 12F);
             this.AutoScaleMode = System.Windows.Forms.AutoScaleMode.Font;
-            this.ClientSize = new System.Drawing.Size(292, 186);
+            this.ClientSize = new System.Drawing.Size(219, 86);
             this.Controls.Add(this.labelRecvCount);
             this.Controls.Add(this.labelSendCount);
             this.Controls.Add(this.labelStatus);
             this.Controls.Add(this.labelTarget);
-            this.FormBorderStyle = System.Windows.Forms.FormBorderStyle.FixedToolWindow;
+            this.FormBorderStyle = System.Windows.Forms.FormBorderStyle.FixedDialog;
+            this.Icon = ((System.Drawing.Icon)(resources.GetObject("$this.Icon")));
             this.MaximizeBox = false;
             this.Name = "Form1";
+            this.StartPosition = System.Windows.Forms.FormStartPosition.CenterScreen;
             this.Text = "ClipboarderX";
             this.ResumeLayout(false);
             this.PerformLayout();
