@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import base64
 import socket
 import struct
 import subprocess
@@ -21,7 +22,8 @@ class ClipboardSyncClient:
         self.server_port = server_port
 
         self.sock: socket.socket | None = None
-        self.lock = threading.Lock()
+        self.net_lock = threading.Lock()
+        self.clip_lock = threading.Lock()
         self.is_connected = False
         self.running = True
 
@@ -29,7 +31,7 @@ class ClipboardSyncClient:
         self.send_count = 0
         self.recv_count = 0
 
-    def get_win_clipboard(self) -> str:
+    def get_win_clipboard(self) -> str | None:
         """WindowsのクリップボードからUTF-8でテキストを取得"""
         cmd = [
             "powershell.exe",
@@ -49,35 +51,34 @@ class ClipboardSyncClient:
             )
             if res.returncode == 0 and res.stdout is not None:
                 return res.stdout
-        except Exception:
-            pass
-        return ""
+        except Exception as e:
+            print(f"[Clipboard Read Error] {e}")
+        return None
 
     def set_win_clipboard(self, text: str) -> bool:
-        """WindowsのクリップボードへUTF-8でテキストを書き込み"""
-        cmd = [
-            "powershell.exe",
-            "-NoProfile",
-            "-NonInteractive",
-            "-Command",
-            "[Console]::InputEncoding = [System.Text.Encoding]::UTF8; $input | Set-Clipboard",
-        ]
+        """Base64経由でWindowsのクリップボードへUTF-8テキストを確実に書き込む"""
+        # UTF-8バイト列をBase64化し、PowerShell側でデコードしてSet-Clipboardに渡す
+        b64_text = base64.b64encode(text.encode("utf-8")).decode("ascii")
+        ps_script = (
+            f"$bytes = [System.Convert]::FromBase64String('{b64_text}');"
+            "$txt = [System.Text.Encoding]::UTF8.GetString($bytes);"
+            "Set-Clipboard -Value $txt"
+        )
         try:
-            # パイプ経由で渡すとPowerShellの$inputが末尾に改行を1つ付与する仕様があるため、
-            # 環境変数経由で渡すことで完全一致の文字列をセットする
-            ps_script = (
-                "$txt = [System.Environment]::GetEnvironmentVariable('WSL_CLIP_DATA', 'Process');"
-                "if ($null -ne $txt) { Set-Clipboard -Value $txt }"
-            )
-            env = {"WSL_CLIP_DATA": text}
             res = subprocess.run(
                 ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", ps_script],
-                env=env,
                 capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
                 timeout=3,
             )
-            return res.returncode == 0
-        except Exception:
+            if res.returncode != 0:
+                print(f"[Clipboard Write Error] {res.stderr.strip()}")
+                return False
+            return True
+        except Exception as e:
+            print(f"[Clipboard Write Exception] {e}")
             return False
 
     def toggle_obfuscation(self, data: bytearray) -> None:
@@ -87,16 +88,14 @@ class ClipboardSyncClient:
 
     def send_text(self, text: str) -> None:
         """4バイト長プレフィックス(Little Endian) + UTF-8ペイロードを送信"""
-        with self.lock:
+        with self.net_lock:
             if not self.is_connected or self.sock is None:
                 return
             try:
                 payload = bytearray(text.encode("utf-8"))
-                # self.toggle_obfuscation(payload)  # 試作キャンセル
+                # self.toggle_obfuscation(payload)
 
-                # C# BitConverter.GetBytes(int) と同じ4バイト・リトルエンディアン
                 length_prefix = struct.pack("<i", len(payload))
-
                 self.sock.sendall(length_prefix + payload)
                 self.send_count += 1
                 print(f"[Sent #{self.send_count}] {len(payload)} bytes")
@@ -134,14 +133,16 @@ class ClipboardSyncClient:
                     break
 
                 payload = bytearray(payload_bytes)
-                # self.toggle_obfuscation(payload)  # 試作キャンセル
+                # self.toggle_obfuscation(payload)
                 received_text = payload.decode("utf-8", errors="replace")
 
-                # 無限ループ防止のため先にlast_textを更新
-                self.last_text = received_text
-                if self.set_win_clipboard(received_text):
-                    self.recv_count += 1
-                    print(f"[Received #{self.recv_count}] {length} bytes")
+                with self.clip_lock:
+                    if self.set_win_clipboard(received_text):
+                        # 書き込み直後に実際にOSにセットされた値を再取得して同期する
+                        actual_text = self.get_win_clipboard()
+                        self.last_text = actual_text if actual_text is not None else received_text
+                        self.recv_count += 1
+                        print(f"[Received #{self.recv_count}] {length} bytes")
         except Exception as e:
             if self.running:
                 print(f"[Receive Loop Error] {e}")
@@ -157,9 +158,9 @@ class ClipboardSyncClient:
                     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                     s.settimeout(5.0)
                     s.connect((self.server_ip, self.server_port))
-                    s.settimeout(None)  # 接続後はブロッキングモードに戻す
+                    s.settimeout(None)
 
-                    with self.lock:
+                    with self.net_lock:
                         self.sock = s
                         self.is_connected = True
 
@@ -174,24 +175,31 @@ class ClipboardSyncClient:
 
     def clipboard_monitor_loop(self) -> None:
         """クリップボード監視ループ"""
-        self.last_text = self.get_win_clipboard()
+        initial = self.get_win_clipboard()
+        if initial is not None:
+            self.last_text = initial
+
         while self.running:
             time.sleep(POLL_INTERVAL)
             if not self.is_connected:
                 continue
 
-            current_text = self.get_win_clipboard()
-            if current_text == self.last_text:
-                continue
+            with self.clip_lock:
+                current_text = self.get_win_clipboard()
+                if current_text is None:
+                    continue
 
-            self.last_text = current_text
-            if not current_text:
-                continue
+                if current_text == self.last_text:
+                    continue
 
-            self.send_text(current_text)
+                self.last_text = current_text
+                if not current_text:
+                    continue
+
+                self.send_text(current_text)
 
     def close_connection(self) -> None:
-        with self.lock:
+        with self.net_lock:
             self.is_connected = False
             if self.sock is not None:
                 try:
