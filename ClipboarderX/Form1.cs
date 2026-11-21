@@ -140,7 +140,7 @@ namespace ClipboarderX
                 try
                 {
                     byte[] payload = Encoding.UTF8.GetBytes(text);
-                    ToggleObfuscation(payload); // 送信前にビット反転で難読化
+                    //ToggleObfuscation(payload); // 送信前にビット反転で難読化 (試作キャンセル)
 
                     byte[] lengthPrefix = BitConverter.GetBytes(payload.Length);
 
@@ -207,7 +207,7 @@ namespace ClipboarderX
                     byte[] payload = new byte[length];
                     if (!ReadExact(netStream, payload, length)) break;
 
-                    ToggleObfuscation(payload); // 受信後にビット反転して元のUTF-8バイト列に戻す
+                    //ToggleObfuscation(payload); // 受信後にビット反転して元のUTF-8バイト列に戻す (試作キャンセル)
                     string receivedText = Encoding.UTF8.GetString(payload);
 
                     this.Invoke((Action)(() =>
